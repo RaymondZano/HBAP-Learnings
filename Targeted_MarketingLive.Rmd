@@ -1,0 +1,512 @@
+---
+title: "Targeted Marketing"
+author: "Sophie Hilgard, David C. Parkes"
+date: "9/30/2018"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+subtitle: Week 3, Data-driven Marketing, Harvard Business Analytics Program
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Imagine that you are in charge of digital marketing at Uber Local Offers, and need a method to determine which offers to present to customers who visit your site. 
+```{r, out.width = "200px"}
+include_graphics("./uber_local_offers.png")
+```
+
+Goal: show each customer one or more offers that are most likely to be redeemed. Accurately predict redemption rates.
+
+## The Data
+
+We'll begin by exploring the data. 
+```{r}
+load("./offers_tiny.RData")
+```
+
+We have **train, test, and validation sets**. Each row corresponds to an offer that was presented to a customer, and whether the offer was redeemed or not. 
+
+**Q1** What is the fraction of data in the training, validation, and test set?
+**A1** 71% training, 14% in each of test and validation  
+
+We explore the first 34 features. These are offer-specific.
+```{r}
+colnames(cleanTrain[1:34])
+```
+
+Look at distribution of values corresponding to the REPUTATION feature. 
+```{r}
+table(cleanTrain$REPUTATION)
+mean(cleanTrain$REPUTATION)
+```
+
+Features 35 through 49 are customer-specific, corresponding to a customer's email provider. 
+```{r}
+colnames(cleanTrain[35:49])
+```
+
+Features 50 through 53 are distance (and offer-customer specific). The only **interaction features**! OFFER_VALUE is offer-specific, and represents the monetary value (USD) of the offer (e.g., "50 off a purchase of 100 or more" would correspond to OFFER_VALUE 50). 
+```{r}
+str(cleanTrain[,50:54])
+```
+```{r}
+summary(cleanTrain$OFFER_VALUE)
+```
+
+Features 55 through 91 are customer-specific features, for example demographic information. From data brokers, or first-party information.
+```{r}
+str(cleanTrain[,55:91])
+```
+
+Features 92 through 161 are the location of the offer. Features 162 through 565 are the merchant ID.  
+```{r}
+str(cleanTrain[,92:96])
+str(cleanTrain[,561:565])
+```
+
+## Logistic Regression
+
+We  first train a **regularized, logistic regression model**. 
+
+(1) Explain LR
+
+
+
+
+
+
+
+
+
+
+
+
+cv.glmnet uses 10-fold cross-validation to choose $\lambda$, minimizing 0-1 error ('class'). 
+```{r, cache=TRUE}
+library("Matrix")
+library("glmnet")
+#convert the data to matrix form for glmnet and remove the target variable
+set.seed(1)
+xTrain <- Matrix(as.matrix(subset(cleanTrain,select=-c(REDEEMED))),sparse=TRUE)
+target<-as.factor(cleanTrain$REDEEMED)
+glmnetFit <- cv.glmnet(x=xTrain,y=target,alpha=0.8, family='binomial', 
+                       type.measure = "class",nlambda=100)
+```
+
+Look at effect of lambda. We use lambda_min, which corresponds to the first dotted line on the plot (and minimizes error).
+```{r}
+library(ggplot2)
+plot(glmnetFit)
+```
+
+
+### Model Evaluation
+#### Confusion Matrices/Accuracy vs. Balanced Accuracy
+
+Adopt threshold 0.5, label a '1' (REDEEM) if predicted value >= 0.5, '0' otherwise. Do this on test data. 
+```{r}
+library("caret")
+xTest <-Matrix(as.matrix(subset(cleanTest,select=-c(REDEEMED)),sparse=TRUE))
+p_hat = as.data.frame(predict(glmnetFit, newx=xTest, type="response", s = "lambda.min"))
+rm(xTest)
+colnames(p_hat)[1] <- "score"
+p_hat_class=data.frame(apply(p_hat, 1, function(x) (ifelse(x>=.5,1,0))))
+colnames(p_hat_class)[1] <- "prediction"
+p_hat_class$prediction=as.factor(p_hat_class$prediction)
+true_class=as.factor(cleanTest$REDEEMED)
+all.confusionMatrix = confusionMatrix(data=p_hat_class$prediction,reference=true_class, positive = '1')
+all.confusionMatrix
+```
+
+**Q2:** What is the problem with the performance of the linear model with decision threshold 0.5?
+**A2:** It is not predicting well for positive examples. Very poor. It says NOT REDEEM all the time. 
+
+(2) Explain CM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Easy fix: set threshold to the fraction of positive examples in the training data.
+```{r}
+#calculate the empirical probability of offer acceptance
+fracPos= nrow(subset(cleanTrain, REDEEMED == 1))/nrow(cleanTrain)
+cat("fraction positive= ",fracPos,"\n")
+p_hat_class=data.frame(apply(p_hat, 1, function(x) (ifelse(x>=fracPos,1,0))))
+colnames(p_hat_class)[1] <- "prediction"
+p_hat_class$prediction=as.factor(p_hat_class$prediction)
+true_class=as.factor(cleanTest$REDEEMED)
+all.confusionMatrix = confusionMatrix(data=p_hat_class$prediction,reference=true_class, positive = '1')
+all.confusionMatrix
+rm("p_hat_class","all.confusionMatrix")
+```
+
+The accuracy on true-1s (sensitivity) is much improved, and we now have good *balanced accuracy*. 
+
+#### Feature Examination
+
+Look at the coefficients of linear model:
+```{r} 
+library("dplyr")
+best_coef <- coef(glmnetFit, s = "lambda.min")
+featuresGLM<-data.frame(name = best_coef@Dimnames[[1]][best_coef@i + 1], 
+                        coefficient = best_coef@x)
+head(arrange(featuresGLM, desc(abs(coefficient))),10)
+#also look at the informative features that are not merchant IDs
+tmpFeatures <- featuresGLM[-grep(pattern = "^FEATURED_MERCHANT", featuresGLM$name),]
+head(arrange(tmpFeatures, desc(abs(coefficient))),10)
+rm(best_coef,tmpFeatures)
+```
+
+Specific merchants foremost, but ignoring these, we see also, food matters, and distance to customer.
+
+**Q3:** Do the predictive features seem sensible? Give a brief explanation.
+**A3:** People like food! Distance matter, far distance has a negative effect, close distance has a postive effect. Needham and South end are fancy.
+
+
+#### Feature Exploration
+
+Use validation set. (1) 92-565 (location and merchant indicators) (2) + 2-34 (offer-specific features) (3) +50-54 (distance and offer value), which still omits the user-specific features that are part of the full model. 
+```{r, cache=TRUE}
+ba <- c(0,0,0,0)
+trainsets<- list(c(92:565),c(2:34,92:565),c(2:34,50:54,92:565))
+target<-as.factor(cleanTrain$REDEEMED)
+true_class=as.factor(cleanValidation$REDEEMED) #note: run chunk 3 again if cleanValidation no longer in environment
+set.seed(2)
+for (i in seq_along(trainsets)){
+  cat("training LR model ",i,"\n")
+  xTrain <- Matrix(as.matrix(cleanTrain[,trainsets[[i]]],sparse=TRUE))
+  glmnetFit_sub <- cv.glmnet(x=xTrain,y=target,alpha=0.8, family='binomial', 
+                         type.measure = "class", nlambda=100)
+  rm(xTrain)
+  xValidation <-Matrix(as.matrix(cleanValidation[,trainsets[[i]]],sparse=TRUE))
+  #lambda.min is the lambda value found to have the lowest error in cv
+  p_hat = as.data.frame(predict(glmnetFit_sub, newx=xValidation, type="response", s = "lambda.min"))
+  rm(glmnetFit_sub)
+
+  colnames(p_hat)[1] <- "score"
+  p_hat_class=data.frame(apply(p_hat, 1,  function(x) (ifelse(x>=fracPos,1,0))))
+  colnames(p_hat_class)[1] <- "prediction"
+  p_hat_class$prediction=as.factor(p_hat_class$prediction)
+  ba[i] <- (sensitivity(data=p_hat_class$prediction,reference=true_class) + specificity(data=p_hat_class$prediction,reference=true_class))/2
+}
+feat_lists <-(c("location and merchant IDs", "+ offer-specific features","+ distance, offer value"))
+for (i in 1:3) {
+  print(paste(feat_lists[i], toString(ba[i]), sep=", "))
+}
+rm(target,true_class,p_hat_class,trainsets,ba,feat_lists,xValidation)
+```
+
+**Q4:** What is the effect of introducing additional features?
+**A4:** Richer features, improving the model.  
+
+#### ROC Curves and Reliability Plots
+
+Does the model correctly rank a random positive example above a random negative example? For this, we can use area under ROC curve (varying threshold on test data). 
+
+(3) Explain ROC curve
+
+
+
+
+
+
+
+
+
+
+```{r}
+library("pROC")
+xTest <-Matrix(as.matrix(subset(cleanTest,select=-c(REDEEMED)),sparse=TRUE))
+p_hat = as.data.frame(predict(glmnetFit, newx=xTest, type="response", s = "lambda.min"))
+colnames(p_hat)[1] <- "score"
+cleanTest$score <- p_hat$score
+par(pty="s")
+g <- roc(REDEEMED ~ score, data=cleanTest)
+auc(g)
+plot(g)
+cleanTest <- subset(cleanTest,select=-c(score))
+rm(g,xTest)
+```
+
+What about calibration? Look at a "reliability plot" (or calibration plot). 
+```{r}
+reliability.plot <- function(obs, pred, fileName, bins=10, scale=T) {
+  #  Plots a reliability chart and histogram of a set of predicitons from a classifier
+  #
+  # Args:
+  #   obs: Vector of true labels. Should be binary (0 or 1)
+  #   pred: Vector of predictions of each observation from the classifier. Should be real
+  #       number
+  #   bins: The number of bins to use in the reliability plot
+  #   scale: Scale the pred to be between 0 and 1 before creating reliability plot
+  require(plyr)
+  min.pred <- min(pred)
+  max.pred <- max(pred)
+  min.max.diff <- max.pred - min.pred
+  if (scale) {
+    pred <- (pred - min.pred) / min.max.diff
+  }
+  bin.pred <- cut(pred, bins)
+  #idx = "(-0.001,0.1]" == bin.pred
+  k <- ldply(levels(bin.pred), function(x) {
+    idx <- x == bin.pred
+    c(sum(obs[idx]) / length(obs[idx]), mean(pred[idx]))
+  })
+  is.nan.idx <- !is.nan(k$V2)
+  k <- k[is.nan.idx,]
+  #pdf(fileName)
+  plot(k$V2, k$V1, xlim=c(0,1), ylim=c(0,1), xlab="Mean Prediction", 
+       ylab="Observed Fraction", col="red", type="o", main="Reliability Plot")
+  lines(c(0,1),c(0,1), col="grey")
+  subplot(hist(pred, xlab="", ylab="", main="", xlim=c(0,1), col="blue"), 
+          grconvertX(c(.8, 1), "npc"), grconvertY(c(0.08, .25), "npc"))
+  #dev.off()
+}
+```
+
+```{r}
+library("Hmisc")
+reliability.plot(as.numeric(cleanTest$REDEEMED), as.numeric(unlist(p_hat$score)),scale=T, bins=20)
+rm(p_hat)
+```
+
+**Q5:** Is the linear model well calibrated?
+**A5:** Looks good up until 0.6. The model is actually calibrated because where we have data we can trust the prediction. 
+
+### Using the Model for Targeting
+
+Consider 30 different customers (same location), and 50 candidate offers. Score offers, pick the best. 
+First, generate the features.
+```{r}
+set.seed(2)
+ncust=30
+noffer=50
+#sample the customer-specific features (35:49 and 55:91) from 30 customers, and store them in cust_vals
+cust_vals = cleanTest[sample(c(1:ncol(cleanTest)), ncust, replace = FALSE),c(35:49,55:91)]  
+#sample the offer-specific features (2:34,54, and 92:565) from 50 offers, and store them in offer_vals
+offer_vals = cleanTest[sample(c(1:ncol(cleanTest)), noffer, replace = FALSE),c(2:34,54,92:565)]  
+#for the distance, we will set all offers to be nearby (suppose this is a criterion when choosing candidate offers)     
+distance_vals = c(1,0,0,0) #"DISTANCE.1" = 1
+View(t(cust_vals[c(6,8,13,20,28),]))
+View(t(offer_vals[c(6,8,13,36,43),]))
+```
+
+Create the 30x50 customer-offer combinations, and score each according to model.
+```{r}
+#create an empty dataframe that will hold our synthetic data with a row for every customer x offer
+candidate_offers <- data.frame(matrix(ncol = 565, nrow = ncust*noffer))  #first block is for customer 1, then customer 2, ..
+colnames(candidate_offers) <- colnames(cleanTrain)
+#for each customer
+for (i in 0:(ncust-1)){
+  for (j in 1:noffer){
+    #i*noffer gets us to the block corresponding to the customer. Then loop through the offers, 
+    #populating the customer-specific fields (35:49 and 55:91) with the values for that customer, 
+    #stored in 1:15 and 16:52 of cust_vals
+    candidate_offers[i*noffer + j, 35:49] <- cust_vals[i+1, 1:15]
+    candidate_offers[i*noffer + j, 55:91] <- cust_vals[i+1, 16:52]
+  }
+}
+#for each offer
+for (j in 1:noffer){
+  for (i in 0:(ncust-1)){
+    #now populate the offer-specific fields (2:34, 54, and 92:565) with the values for each offer,
+    #which have been stored in 1:33, 34, and 35:508 of offer_vals, respectively
+    candidate_offers[i*noffer + j, 2:34] <- offer_vals[j, 1:33]
+    candidate_offers[i*noffer + j, 54] <- offer_vals[j, 34]
+    candidate_offers[i*noffer + j, 92:565] <- offer_vals[j, 35:508]
+  }
+}
+#populate the distance-specific values with the same values for all customer-offer combinations
+for (i in 1:(ncust*noffer)){
+  candidate_offers[i,50:53] <- distance_vals
+}
+
+#generate predictions for the synthetic customer-offer data
+xOffers <-Matrix(as.matrix(subset(candidate_offers,select=-c(REDEEMED)),sparse=TRUE))
+p_offer_vals = as.data.frame(predict(glmnetFit, newx=xOffers, type="response", s = "lambda.min"))
+rm(xOffers)
+colnames(p_offer_vals)[1] <- "pred_redemption_rate"
+```
+
+We can now determine which offer would be selected for each customer:
+```{r}
+#for each customer, index into the block of predicted values corresponding to candidate offers 
+#find the best offer
+for (i in 0:(ncust-1)){
+  best_offer = which.max(p_offer_vals[(i*noffer + 1):((i+1)*noffer),'pred_redemption_rate'])
+  cat("cust", i+1, "best offer", best_offer, "redemption rate", p_offer_vals[(i*noffer + 1):((i+1)*noffer),'pred_redemption_rate'][best_offer],"\n")
+}
+rm(best_offer)
+```
+ 
+**Q6:** What is concerning about the decisions? How can you explain this?
+**A6:** Same offer 8 to everybody. Why? One reason is offer 8 is great. Another reason could be that the model is linear, without interactions. 
+
+(4) Explain 
+
+
+
+
+
+
+
+
+
+
+```{r}
+rm(offer_vals, glmnetFit, p_offer_vals)
+```
+
+## Random Forests
+
+Let's train a *random forest*.
+
+
+(5) Explain random forests 
+
+
+
+
+
+
+
+
+
+
+We reduce the training size to 13,000 to avoid memory problems. 50 trees, 24 mtry vars each try.
+```{r, cache=TRUE, message=FALSE}
+library("ranger")
+set.seed(3)
+rfFit <- ranger(REDEEMED ~ ., data = cleanTrain[1:13000,], probability=TRUE,
+                num.trees = 50, mtry = 24, importance = "impurity")
+```
+
+
+### Model Evaluation
+
+Let's look at the confusion matrix (thresold = fraction of positive examples).
+```{r}
+classPredRF <- predict(rfFit, data=cleanTest)
+p_hat_rf <- data.frame(classPredRF$prediction[,c(2)])
+colnames(p_hat_rf)[1] <- "score"
+p_hat_rf_class = data.frame(apply(p_hat_rf, 1, function(x) (ifelse(x>=fracPos,1,0))))
+colnames(p_hat_rf_class)[1] <- "prediction"
+p_hat_rf_class$prediction=as.factor(p_hat_rf_class$prediction)
+all.confusionMatrix = confusionMatrix(data=p_hat_rf_class$prediction,reference = as.factor(cleanTest$REDEEMED), positive='1')
+all.confusionMatrix
+rm('p_hat_rf_class','all.confusionMatrix')
+```
+
+**Q7:** How does the predictive performance of the random forest model compare to that of the linear model?
+**A7:**  Slightly better balanced accuracy 
+
+### Model Cross-Validation
+
+Can also explore the number of trees. Will see that the balanced accuracy increases from 10 to 50 trees, but with similar performance for 50 and 100 trees (on this data set).
+
+### Model Interpretation
+
+There are no coefficients to read off! Can explore importance of features; e.g., using "impurity", measure of average information gain for a feature, weighted by number of examples that branch on it in the random forest. 
+```{r}
+head(arrange(VI <- data.frame(variable=names(rfFit$variable.importance),
+                              importance=rfFit$variable.importance, row.names=NULL),
+             desc(importance)),15)
+```
+
+This suggests that 'OFFER_VALUE' is the most important variable. Can also use the *permutation* approach (which looks at the decrease in accuracy when the values of a feature are randomly permuted). 
+```{r, CACHE=TRUE, message=FALSE}
+set.seed(5)
+rfFit2 <- ranger(REDEEMED ~ ., data = cleanTrain[1:10000,], probability=TRUE,
+                 num.trees = 50, mtry = 24, importance = "permutation") 
+head(arrange(VI <- data.frame(variable=names(rfFit2$variable.importance),
+                              importance=rfFit2$variable.importance, row.names=NULL),
+             desc(importance)),15)
+rm(rfFit2)
+```
+
+**Q8:** Does the permutation method change the conclusions about the informativeness of different features?
+**A8:** yes, the conclusions change in terms of which features are informative. 
+
+#### Partial Dependency Plots
+
+A *partial dependency plot* shows effect of varying a feature on predicted redemption rate, e.g. here we vary OFFER_VALUE in training data. We use 5,000 examples to avoid to avoid memory problems. 
+```{r, cache=TRUE}
+library("pdp")
+xgrid <- data.frame(OFFER_VALUE = seq(10,50,5)) 
+pd <- partial(rfFit, pred.var = "OFFER_VALUE", pred.grid=xgrid, prob=TRUE, which.class=2, type="classification", train = cleanTrain[1:5000,])
+sp<-autoplot(pd, contour = TRUE, legend.title = "Partial\ndependence")
+sp
+for (i in seq(10,50,5)){
+  cat("Number of examples with VALUE around ",toString(i)," is ", with(cleanTrain[1:5000,], sum(OFFER_VALUE > (i-2.5) & OFFER_VALUE <= (i+2.5))),"\n")
+}
+rm(sp,xgrid,pd)
+```
+For the range 10 to 30, we see the expected trend of higher offer value corresponding to higher redemption rates. There is not much data at 35, 40, 45, but we can consider 30 vs 50.
+
+**Q9:** Why might offers with value 50 have smaller redemption rate than offers with value 30?
+**A9:** Spontaneous action is more likely when the offer value has a low amount, suggesting perhaps a less expensive place?
+
+**Q10:** Generate a partial dependency plot for REPUTATION, modifying the code (grid of values 3, 3.5, 4, 4.5, and 5). 
+**A10:** 
+```{r, CACHE=TRUE}
+xgrid <- data.frame(REPUTATION = seq(3,5,0.5))
+pd <- partial(rfFit, pred.var = "REPUTATION", pred.grid=xgrid, prob=TRUE, which.class=2, type="classification", train = cleanTrain[1:5000,])
+sp<-autoplot(pd, contour = TRUE, legend.title = "Partial\ndependence")
+sp
+for (i in seq(3,5,0.5)){
+  cat("Number of examples with REPUTATION around ",toString(i)," is ", with(cleanTrain[1:5000,], sum(REPUTATION > (i-0.25) & REPUTATION <= (i+0.25))),"\n")
+}
+rm(sp,xgrid,pd)
+```
+
+
+
+#### ROC Curves and Reliability Plots
+
+```{r}
+cleanTest$score <- p_hat_rf$score
+par(pty="s")
+g <- roc(REDEEMED ~ score, data=cleanTest)
+auc(g)
+plot(g)
+cleanTest <- subset(cleanTest,select=-c(score))
+rm(g)
+reliability.plot(as.numeric(cleanTest$REDEEMED), p_hat_rf$score, scale=T, bins=20)
+```
+
+Similar AUC, and continues to improve with more training data. The predictor also becomes calibrated for a larger amount of training data.
+
+### Using the Model For Targeting
+
+Let's target! 
+```{r}
+p_offer_vals_rf = predict(rfFit, data=candidate_offers)$prediction
+colnames(p_offer_vals_rf)[2] <- "pred_redemption_rate"
+for (i in 0:(ncust-1)){
+  best_offer = which.max(p_offer_vals_rf[(i*noffer + 1):((i+1)*noffer),'pred_redemption_rate'])
+  cat("cust", i+1, "best offer", best_offer, "redemption rate", p_offer_vals_rf[(i*noffer + 1):((i+1)*noffer),'pred_redemption_rate'][best_offer],"\n")
+}
+```
+
+**Q11:** What do you notice?
+**A11:** 
+
+# Conclusions
+
+In this exercise, we have seen that although linear model provides good accuracy for predicting whether or not a customer will redeem an offer there is a fundamental flaw with the approach--- it does not really provide personalized targeting because the only interaction features between offer and customer are distance. Random forests are more suitable, in the absence of richer, hand-engineered features, since they automatically find useful interactions. The takeaway is that we should think carefully about the business context, and understand how a model will be used.
