@@ -1,0 +1,520 @@
+---
+title: "Recommender Systems"
+subtitle: "Week 6, Data-driven Marketing, Harvard Business Analytics Program"
+author: "Sophie Hilgard and David C. Parkes"
+date: "9/30/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+In the age of internet retailing, there are many more items available than can be shown to a customer at once; this is the "long tail effect," with a small number of very popular products, and a very large number of products that are each popular to only a few customers. To solve the question of what to show to a customer, businesses make use of *recommender systems*. By helping a customer find products that they really like but didn't know about, a successful recommender system can help in two distinct ways:
+
+1) Increasing customer engagement and satisfaction, and therefore lowering customer churn
+2) Increasing profit 
+
+In this exercise, we will explore different kinds of recommender systems, and understand the situations in which each is most appropriate.
+
+## Shopping Basket Recommendations: "Customers who Buy X also Buy Y" 
+
+First, we consider short-term recommendations, adopting the approach of *association rules*. Association rules are related to the "item similarities" method discussed in this week's materials, which considers the co-occurrence of pairs of items, for example in a shopping basket, relative to what would be expected by chance. 
+
+Consider the situation below, where Amazon tries to sell additional items, based on the items in your cart. This is important to get right in a business context.
+```{r}
+knitr::include_graphics('./freqbought.png')
+```
+
+The relevant data is about the items that occur together in historical transactions. For example, do hot dogs get purchased together with hot dog buns? Association rules are relationships between individual items and between sets of items. 
+
+Consider these two rules:
+$$
+\{\mbox{Hot Dogs}\}\rightarrow \{\mbox{Hot Dog Buns}\}\\
+\{\mbox{Sharp Cheddar Cheese},\mbox{Honeycrisp Apple}\}\rightarrow \{\mbox{Banana}\}
+$$
+The left-hand side of a rule indicates an item or set of items that need to be in a shopping basket for a rule to "fire," and the right-hand side provides the additional item or items that are suitable to recommend (there can be multiple items on the right-hand side).
+
+Suppose we have N transactions, and use N(X) and N(Y) to denote the number of transactions that include (at least) itemset X and the itemset Y, respectively. Use N(X+Y) to denote the number of transactions that include at least both items X and items Y.  We look for rules with high *support*. The support supp(X->Y) of rule X->Y is a quantity between 0 and 1. High support means that items X and Y are purchased together often enough for a rule to be interesting:
+$$
+\mathit{supp}(X\rightarrow Y)=\frac{N(X+Y)}{N}.
+$$
+We also look for rules that have high *confidence*. The confidence conf(X->Y) of rule X->Y is a quantity between 0 and 1, and an estimate of the conditional probability of also purchasing itemset Y given a user purchases itemset X--- how likely it is for itemset Y to also be present when itemset X is present? 
+$$
+\mathit{conf}(X\rightarrow Y)=\frac{N(X+Y)}{N(X)}.
+$$ 
+High confidence may indicate a good opportunity to cross-sell itemset Y when X is in the shopping basket: if both hot dogs and hot dog buns are purchased in about as many transactions as hot dogs, then the confidence for rule HotDogs->HotDogBuns would be close to 1. 
+
+Although useful, a problem is that confidence can also pick out associations that occur just because itemset Y is popular. For example, if everyone drinks coffee, then rule HotDogs->Coffee would have confidence close to 1!  This problem with confidence can be addressed by also considering a related quantity, the *lift* of a rule, which we introduced when discussing "people who purchased X also purchased Y" in this week's asynch material. We first define the *frequency* of different itemsets in the data:
+$$
+f_X=\frac{N(X)}{N},\ f_Y=\frac{N(Y)}{N},\ f_{XY}=\frac{N(X+Y)}{N}
+$$
+The lift of a rule X->Y can be any non-negative value, and is an estimate of the conditional probability of Y given X, divided by the probability of Y. It is high when Y occurs more frequently with X than it does by itself:
+$$
+\mathit{lift}(X \rightarrow Y)=\frac{f_{XY}}{f_X\times f_Y}=\frac{\mathit{conf}(X\rightarrow Y)}{f_Y}.
+$$
+To relate to confidence, we can simply divide by the frequency of Y. To see what this does on our hot dog and coffee example, first suppose hot dog buns are purchased in 1% of transactions, hot dogs are purchased in 1% of transactions, and hot dogs and hot dog buns are purchased together in almost 1% of transactions. The lift of rule HotDogs->HotDogBuns would be: 
+$$
+\mathit{lift}(\mbox{Hot Dogs}\rightarrow \mbox{Hot Dog Buns})=\frac{0.01}{0.01\times 0.01} = 100
+$$
+Suppose coffee is purchased in 10% of transactions, but coffee and hot dog purchases are uncorrelated, so that they are only purchased together in 10% of those transactions that include hot dogs, i.e. in 0.1% of transactions. The lift of the rule HotDogs->Coffee would be:
+$$
+\mathit{lift}(\mbox{Hot Dogs}\rightarrow \mbox{Coffee})=\frac{0.001}{0.01\times 0.1}=1
+$$ 
+
+Although confidence is close to 1 for both rules, the lift is much higher for the first rule than the second rule. 
+
+**Q1:** Which of high lift and high confidence seems more useful for a recommendation to have a positive effect on sales?
+**A1:** [Write your answer here]
+
+For an implementation of association rules, we use the [arules](https://cran.r-project.org/web/packages/arules/index.html) package.
+```{r, include=FALSE}
+library(arules)
+```
+
+## Exercise 1: Association Rules
+
+We use data from *Instacart* (a company that provides a same-day grocery delivery service). The full dataset is located [here](https://tech.instacart.com/3-million-instacart-orders-open-sourced-d40d29ead6f2). We use a subset of the data that consists of 50,000 transactions. First, we read in the data, and check the format.
+```{r}
+insta.raw <- readLines('./instacart_transactions.csv')
+head(insta.raw)
+```
+
+Each of the 50,000 transactions is a string of product ids, and insta.raw is a vector of these strings. For example, the first transaction insta.raw[1] is a string describing 10 products, the second transaction insta.raw[2] is a string describing 3 products, and so forth. 
+
+We transform the data into a *transactions* object, which is used by arules. For this, we use strsplit to break each transaction into a vector of strings, one for each product id.
+```{r}
+insta.list <- strsplit(insta.raw, ", ")
+names(insta.list) <- paste("Trans ", 1:length(insta.list), sep="")
+head(insta.list)
+```
+
+We convert this into a transactions object, which uses a sparse matrix representation to store the data.
+```{r}
+insta.trans <- as(insta.list, "transactions")
+summary(insta.trans)
+rm(insta.raw)
+rm(insta.list)
+```
+
+We see that there are 29,169 distinct items in the data. The most frequently purchased items are 24852, 13176, and 21137. The median transaction contains 8 items. There are 2,498 transactions with only 1 item, and there is one transaction with 109 items. We can check the product database to find out more.
+```{r}
+products <- read.csv(file="./products.csv", header=TRUE, sep=",")
+head(products)
+```
+
+Let's look at the most-ordered products.
+```{r}
+products[products['product_id'] == 24852]
+products[products['product_id'] == 13176]
+products[products['product_id'] == 21137]
+products[products['product_id'] == 21903]
+products[products['product_id'] == 47209]
+```
+
+People love bananas! Now we're ready to investigate which items are frequently purchased together. Arules uses the *apriori* algorithm to generate rules. If you're interested, you can learn more about association rules and the apriori method in this [chapter](https://www-users.cs.umn.edu/~kumar001/dmbook/ch6.pdf). 
+
+In calling the apriori algorithm, we specify the mininum support and mininum confidence for rules. We will subsequently look at rules that also have high lift. In practice, we would adjust these parameters until we find a suitable ruleset. 
+```{r}
+insta.rules <- apriori(insta.trans, parameter=list(supp=0.001, conf=0.4))
+```
+
+The output suggests that 55 rules have been found. To now find rules from this set that also have high lift, we can use the arules "inspect" method, asking for rules with lift greater than 50.
+```{r}
+inspect(head(subset(insta.rules, lift > 50)))
+```
+
+We can now look at the products in rules 1 and 3 (rule 2 is rule 1, in reverse order).
+```{r}
+products[products['product_id'] == 15984]
+products[products['product_id'] == 38312]
+products[products['product_id'] == 13263]
+products[products['product_id'] == 36865]
+```
+
+**Q2:** Interpret these high-lift association rules. Do they seem to present a cross-sell opportunity?
+**A2:** [Write your answer here]
+
+Let's also take a look at some rules with lower support, but higher confidence. That is, X and Y may not be purchased very frequently, but the relative frequency of purchasing Y when purchasing X is large. 
+```{r}
+insta.rules2 <- apriori(insta.trans, parameter=list(supp=0.0003, conf=0.7))
+```
+
+This time 75 rules have been found. Let's use the arules "sort" method to look at a few of the rules, this time looking at those with small lift (but high confidence).
+```{r}
+insta.lo <- tail(sort(insta.rules2, by="lift"), 10)
+inspect(insta.lo)
+```
+
+We know that the items on the right-hand side of these rules are all bananas. Looking at the items in rule 1 that lead to item 13176 ('bag of organic bananas'), and rule 6 that lead to item 24852 ('banana'), we see:
+```{r}
+products[products['product_id'] == 30391]
+products[products['product_id'] == 39275]
+products[products['product_id'] == 47209]
+products[products['product_id'] == 16185]
+products[products['product_id'] == 45066]
+```
+
+**Q3:** Do these rules find something interesting about consumer preferences?
+**A3:** [Write your answer here]
+ 
+```{r}
+rm(insta.rules, insta.rules2, insta.trans,products, insta.lo)
+```
+
+# Content-Based Recommender Systems
+
+Let's now consider Amazon recommendations below, which are based on browsing history. These recommendations are based on patterns of purchases in the past, and may be achieved with content-based, collaborative filtering, or hybrid methods.
+```{r}
+knitr::include_graphics('./browsinghistory.png')
+```
+
+We first study *content-based recommenders*, in which users and items are matched based on characteristics. For example, this may match people who like romantic comedies with movies that are in the comedy genre. 
+
+## Exercise 2: Content-Based Recommender Systems
+
+The first step is to view and understand the structure of the data. We'll use the **MovieLens dataset**, which is [freely available](https://grouplens.org/datasets/movielens/). We use the smaller, 100K data set, which contains 100,000 movie ratings from 943 users on 1,664 movies, and dates to April 1998. We load the data from the [recommenderlab](https://cran.r-project.org/web/packages/recommenderlab/index.html) package. 
+```{r, include=FALSE}
+library(recommenderlab)
+library(Metrics)
+```
+
+```{r}
+data(MovieLense) ## get the data
+str(MovieLense) 
+```
+
+The data is stored as object 'realRatingMatrix'. 
+```{r}
+## look at the first few ratings of the second user, by converting this into a list data structure (and taking the head)
+cat("First few ratings of second user:\n")
+head(as(MovieLense[2,], "list")[[1]])
+## mean rating (averaged over users)
+cat("\n Average rating of all users:", mean(rowMeans(MovieLense)))
+```
+
+```{r}
+ ## visualize part of the matrix, using a method provided by the recommenderlab package
+image(MovieLense[1:100,1:100])  #the first 100 users, first 100 movies
+image(MovieLense[1:943,1:1664]) #all users, all movies
+
+## histogram of the number of ratings per user, row = user 
+hist(rowCounts(MovieLense), breaks=100)
+cat("Number of ratings per user:\n")
+summary(rowCounts(MovieLense)) #basic statistics on counts
+```
+
+**Q4:** What might explain the phenomenon that can be seen to the top-right of the visualization of the rating matrix? Is there anything surprising about the distribution on the number of ratings provided by each user?
+**A4:** [Write your answer here]
+
+The MovieLens dataset provides movie genre information. 
+```{r}
+head(MovieLenseMeta)
+```
+
+(The imdb.com URLs no longer work). There are 19 genres all together (including unknown), and each movie belongs to one or more genres. 
+
+For a content-based method, we need to associate each user with a set of genres. For this, we will combine information from the movies that users have rated, associating a positive weight with a rating of 3, 4, or 5 ("like") and a negative weight with a rating of 1 or 2 ("dislike"). At the same time, we randomly split the data into a training set and test set, by masking 20% of the entries and holding them back for test data.
+```{r}
+set.seed(2)
+ml.matrix <- as(MovieLense, "matrix")  #convert the data into a 943 x 1664 matrix
+mask <- sample(c(0,1), 1664*943, replace=TRUE, prob=c(.2, .8)) # entries with a '0' will be held-out 
+mask <- matrix(mask, nrow = 943, byrow = TRUE)                 # do this for 20%
+ml.train <- ml.matrix
+ml.train[mask==0] <- NA  #if mask '0', ignore the entry
+ml.test <- ml.matrix     
+ml.test[mask==1] <- NA   #if mask '1', ignore the entry
+rm(mask)
+simple.ml.train<-ml.train
+simple.ml.train[ml.train<3] <- -1    #map to dislike (-1) 
+simple.ml.train[ml.train>=3] <- 1    #map to like (1)
+simple.ml.train[is.na(ml.train)] <- 0 
+```
+
+We can inspect some of the entries for the first user in the original data as well as the simple.ml.train data frame:
+```{r}
+ml.matrix[1,268:273]
+simple.ml.train[1,268:273]
+```
+
+**Q5:** Explain the entries in ml.matrix and simple.ml.train data frames for this user.
+**A5:** [Write your answer here]
+
+We now tally the number of movies of each genre that a user likes and the number that a user dislikes. Recall that we have the genres for each movie:
+```{r}
+movie.genres <- MovieLenseMeta[,4:22]   
+head(movie.genres)
+```
+
+simple.ml.train is a 943 x 1664 dimensional matrix, and movie.genres is a 1664 x 19 dimensional matrix. Because we record "like" as +1 and "dislike" as -1, we can multiply these two matrices, to obtain a 943 x 19 dimensional matrix, representing the net "like-vs-dislike score" for each user and genre. 
+```{r}
+user.genres <- simple.ml.train %*% as.matrix(movie.genres)
+head(user.genres)
+```
+
+How to go from this net like-vs-dislike score to a vector of user interests? All genres with a non-negative score? But some users, 1 and 2 for example, would include almost every genre. 
+
+We take a simple approach, which is to select the genres for a user that are above the mean score for that user. For this, we standardize the entries in each row, so that they have mean 0 and standard deviation 1, and then select the genres with a score that above 0. We look at the results for the first few users.
+```{r}
+user.genres.norm <- t(apply(user.genres, 1, function(x){(x-mean(x))/(sd(x))}))  #standardize the entries, row-by-row
+user.genres.bin <- user.genres.norm 
+user.genres.bin[user.genres.norm<0] <- 0   #map entries below 0 to a '0'
+user.genres.bin[user.genres.norm>=0] <- 1  #map entries above 0 to a '1'
+head(user.genres.bin)
+rm(user.genres.norm)
+```
+
+Each row in user.genres.bin is a list of genres associated with a user. 
+
+We can now find similar movies. We use cosine similarity, as explained in this week's asynch materials. Because the movie vectors and user vectors are 0,1 vectors, the cosine similarity will be a value between 0 and 1, with higher being better. For this, we use the philentropy package. 
+```{r, include=FALSE}
+library(philentropy)
+```
+
+We can use cosine similarity to generate scores for movies for a user. For example, let's consider user 2. 
+```{r, message=FALSE}
+user.num <- 2  #do this for user 2
+user.score <- vector(mode = "numeric", length = 1664) #create a blank vector
+for (i in 1:1664){
+  x <- rbind(user.genres.bin[user.num,], movie.genres[i,])
+  user.score[i] <- distance(x, method="cosine") #compute cosine similarity between movie i and this user
+}
+cat("distribution on recommender scores for user 2 (higher is better):\n")
+summary(user.score)
+```
+
+We can retrive the 20 movies that are predicted to be the best for this user.
+```{r}
+best.movies <- head(order(user.score, decreasing=TRUE), 20) #get the top-20 ranked movies for this user
+cat("Names of top 20 movies for user 2 according to content-based recommender:\n")
+MovieLenseMeta[best.movies,1]   #get the names of these movies
+```
+
+Let's look to see whether any of these movies were watched by the user, and if so what the user's rating was. 
+```{r}
+cat("Top-20 ranked recommendations for user 2, content-based recommender.\n")
+for (i in 1:20){
+  if (is.na(ml.matrix[user.num, best.movies[i]])){
+    cat("  ",MovieLenseMeta[best.movies[i],1],"\n")
+  }
+  else{
+    cat("**Rated by user, with rating",ml.matrix[user.num, best.movies[i]],"\n")
+  }
+}
+```
+
+We see that two of them, Fargo and The Godfather, were watched by the user, and both have a 5 rating. We can also inspect some of the user's other 5-rated movies.
+```{r}
+favorite.movies <- which(ml.matrix[user.num, ]>4)
+cat("User 2's top-rated movies:\n")
+for (i in 1:10) {
+  cat("  ",MovieLenseMeta[favorite.movies[i],1],"\n")
+}
+```
+
+It's hard to know how good these results are. We can also rank the held-out movies according to the recommender score (higher is better), and compare this with the user-provided ratings.
+```{r}
+cat("Movies rated by user 2, and held-out into the test data:\n")
+test.movies <- which(!is.na(ml.test[user.num,]))  #get the user 2 movies in the test data 
+ml.test[user.num, test.movies][order(ml.test[user.num, test.movies])] #sort these, higher is better
+
+cat("\nThe recommender scores for this user for the same set of movies, sorted by increasing simlarity score:\n")
+ml.test.copy <- ml.test #use this to generate recommender scores for these same movies 
+ml.test.copy[user.num, test.movies] <- user.score[test.movies] #set the entries according to their recommender score 
+ml.test.copy[user.num, test.movies][order(ml.test.copy[user.num, test.movies],decreasing=FALSE)] #get the sorted list, higher is better  
+```
+
+**Q6:** What do you see, comparing the user's ratings with the ranking that is suggested by the content-based recommender?
+**A6:** [Write your answer here]
+
+We can also convert the recommender scores into star-ratings and look at the accuracy on the held out, test data. For this, we calculate the frequency with which each user assigns each rating in the training data, and try to assign the same fraction of 5, 4, ... 1 ratings. For example, if 10% of a user's ratings were 5, we would assign the top 10% or so of recommender scores for this user to be 5s. Let's look at the distribution on star-ratings for user 2.
+```{r}
+freq <-as.data.frame(table(ml.train[2,]))
+freq$Freq <- freq$Freq / length(ml.train[2,][!(is.na(ml.train[2,]))])
+freq
+```
+
+The following code will use this approach to predict star-ratings for movies in the test data for each user, and compute the RMSE on the held out data.
+```{r, message = FALSE, warning = FALSE}
+y_hat <- c()
+y <- c()
+ml.test.copy <- ml.test
+#for each user
+for (user.num in 1:943){  #943
+  user.score <- vector(mode = "numeric", length = 1664) #create a blank vector
+  test.movies <- which(!is.na(ml.test[user.num,]))
+  #for each movie in the test set for that user
+  for (i in test.movies){
+    x <- rbind(user.genres.bin[user.num,], movie.genres[i,])
+    user.score[i] <- distance(x, method="cosine")  #compute cosine similarity for movie i
+  }
+  ml.test.copy[user.num, test.movies] <- user.score[test.movies]
+  #calculate the frequency of each rating in user's training set
+  freq <-as.data.frame(table(ml.train[user.num,]))
+  freq$Freq <- freq$Freq / length(ml.train[user.num,][!(is.na(ml.train[user.num,]))])
+  ordered_ratings <- ml.test.copy[user.num, test.movies][order(ml.test.copy[user.num, test.movies], decreasing=FALSE)]
+  freq$Freq <- round(freq$Freq * length(ordered_ratings))
+  #assign numerical rankings based on ordering by recommender score
+  for (i in seq_along(freq$Var1)){
+    for (x in 1:freq$Freq[[i]]){
+      #rounding may result in slightly more than length
+      if ((x + sum(freq$Freq[0:(i-1)]))<=length(ordered_ratings)){
+        #need to convert levels back to numeric
+        ordered_ratings[x + sum(freq$Freq[0:(i-1)])] <-
+          as.numeric(levels(freq$Var1[[i]]))[freq$Var1[[i]]]
+      }
+    }
+  }
+  y_hat <- c(y_hat, ordered_ratings)  #lowest first 
+  y <- c(y, ml.test[user.num, test.movies][order(ml.test.copy[user.num, test.movies], decreasing=FALSE)]) #get true ratings, in same order 
+  #cat("user",user.num,"rmse",rmse(y, y_hat),"\n")
+}
+cat("The RMSE using the content-based recommender system is",rmse(y, y_hat))
+rm(ml.test.copy)
+```
+
+**Q7:** Do you consider this to be a good RMSE, or not?
+**A7:** [Write your answer here]
+
+```{r}
+rm(ml.matrix, simple.ml.train, y_hat, y, MovieLense, MovieLenseMeta, movie.genres, user.genres, user.genres.bin, user.score)
+```
+
+# Collaborative Filtering 
+
+In collaborative filtering, we work directly with user ratings and do not use the genre information. If one user likes many of the same movies as another user, then a user-user collaborative-filtering method would tend recommend movies liked by the other user. 
+
+## Exercise 3: Collaborative Filtering
+
+The 'recommenderlab' package provides various collaborative filtering algorithms through the 'Recommender' method. By stipulating method="UBCF", we can run user-user collaborative filtering, and parameters nn=30 and Cosine specify the use of 30 nearest neighbors when making predictions and the use of the cosine similarity measure. We can use UBCF to generate the top-10 recommendations for user 2.
+```{r}
+user.num <- 2
+model.ubcf<- Recommender(as(ml.train, "realRatingMatrix"), method = "UBCF",
+                         param=list(normalize = "center", method="Cosine", nn=30))
+recs.ubcf <- predict(model.ubcf, as(ml.train, "realRatingMatrix")[user.num], n=10)
+print(as(recs.ubcf, "list"))
+```
+
+It's interesting to see no overlap with those recommended by the content-based recommender. 
+
+We can also try the item-item collaborative filtering method, this time with parameter k=60, to indicate that it should work with the 60 closest movies. This takes a little longer to run.
+```{r}
+model.ibcf<- Recommender(as(ml.train, "realRatingMatrix"), method = "IBCF",
+                         param=list(normalize = "center", method="Cosine", k=60))
+recs.ibcf <- predict(model.ibcf, as(ml.train, "realRatingMatrix")[user.num], n=10)
+print(as(recs.ibcf, "list"))
+```
+
+Yet another, disjoint set of movies! 
+
+We can calculate the RMSE on the test set for these two methods, and compare with the performance of the content-based recommender. For this, we use the calcPredictionAccuracy method. This may take a minute or so to run.
+```{r}
+recs.ubcf <- predict(model.ubcf, as(ml.train, "realRatingMatrix"), type="ratings")
+error.ubcf<-calcPredictionAccuracy(recs.ubcf, as(ml.test, "realRatingMatrix"))
+#MAE (mean average error), MSE (means squared error) and RMSE (root means squared error)
+cat("Performance of user-user CF:\n")
+print(error.ubcf)
+rm(recs.ubcf,error.ubcf,model.ubcf)
+
+recs.ibcf <- predict(model.ibcf, as(ml.train, "realRatingMatrix"), type="ratings")
+error.ibcf<-calcPredictionAccuracy(recs.ibcf, as(ml.test, "realRatingMatrix"))
+#MAE (mean average error), MSE (means squared error) and RMSE (root means squared error)
+cat("\nPerformance of item-item CF:\n")
+print(error.ibcf)
+rm(recs.ibcf,error.ibcf,model.ibcf)
+```
+
+**Q8:** What do you notice when comparing between these methods and the content-based recommender? Do you find anything surprising, and if so, can you suggest a possible explanation?
+**A8:** [Write your answer here]
+
+# Collaborative Filtering via Matrix Factorization 
+
+As discussed in this week's asynch materials, matrix factorization projects both users and items into the same vector space, and generates new ratings by taking the dot product of projected, user and item vectors. This method was popularized following its success in the Netflix prize.
+
+## Exercise 4: Matrix Factorization
+
+For this, we'll use [recosystem](https://cran.r-project.org/web/packages/recosystem/index.html) package. 
+```{r}
+library(recosystem)
+```
+
+We can see from the [documentation](https://cran.r-project.org/web/packages/recosystem/vignettes/introduction.html) that this package expects the data as a sparse matrix triplet, so we first transform the data. Again, we choose 80% of the samples as training, and hold out 20% for testing. The parameters passed to the 'train' function are the weights applied to the L1 and L2 regularization terms for each of the user matrix and item matrix. 
+```{r}
+#prepare the data into sparse triple format, setting NAs to 0
+ml.train.removeNA <- ml.train
+ml.train.removeNA[is.na(ml.train.removeNA)] <- 0
+ml.test.removeNA <- ml.train
+ml.test.removeNA[is.na(ml.test.removeNA)] <- 0
+#transform to dgtMatrix (sparse) and then to triplets (user, item, rating)
+data.train <- as.matrix(summary(as(ml.train.removeNA, "dgTMatrix")))
+data.test <- as.matrix(summary(as(ml.test.removeNA, "dgTMatrix")))
+model = Reco()
+train_set = data_memory(user_index = data.train[,1], item_index =  data.train[,2], rating=data.train[,3], index1 = TRUE)
+test_set = data_memory(user_index = data.test[,1], item_index =  data.test[,2], rating=data.test[,3], index1 = TRUE)
+model$train(train_set, opts = list(dim = 10,
+                               costp_l1 = 0, costp_l2 = 0.01,
+                               costq_l1 = 0, costq_l2 = 0.01,
+                               niter = 20,
+                               nthread = 4))
+```
+
+We can see the improvement of the model's RMSE on the training set across iterations of the training algorithm. Let's look at the RMSE on the test set.
+```{r}
+#predict ratings on test set
+preds = model$predict(test_set, out_memory())
+cat("RMSE of the matrix factorization method on the MovieLens data is", sqrt(mean((data.test[,3] - preds)^2)))
+rm(preds) 
+```
+
+**Q9:** What do you notice about the RMSE relative to other methods? Also compare this with the RMSE at the start of the Netflix competition (0.9525 on test data), and the RMSE of the winning entry by BellKor's Pragmatic Chaos (0.8567 on test data). Can you explain what you find?
+**A9**: [Write your answer here]
+
+```{r}
+rm(ml.test,ml.train,ml.train.removeNA, ml.test.removeNA,data.train,data.test,train_set,test_set)
+```
+
+
+# Other Concerns: Profit Maximization
+
+So far, we've explored how to achieve good predictive accuracy. This is great, but may not be quite the right target. Have you ever noticed, for example, how heavily Netflix promotes its own shows while burying box office hits deeper in its recommendations? Perhaps this is because it is less expensive for Netflix to provide this content (once it has been produced!), or because Netflix wants to build its brand value. Similarly, e-commerce sites such as Amazon, Orbitz, or Wayfair may favor items with a higher profit margin. 
+
+## Exercise 5: Profit Maximization
+
+We can explore the idea of making a tradeoff between profit considerations and the quality of recommendation. Suppose there is a single recommendation to make to a user. For example, an e-commerce site will choose a product to highlight in a targeted email. The recommender system has determined the 'best-fit' item, but will consider a more profitable, similar item.
+
+**Q10:** Why look for a profitable item that is, at the same time, similar to the best-fit item? 
+**A10:** [Write your answer here]
+
+For this, we'll work with synthetic data. First, we generate, for each of 20 items, a vector representing which of 10,000 customers have purchased the item. For this, we assume that each item has a different propensity to be purchased, and a profit, sampled from a Normal distribution with mean 1 and s.d. 1.
+```{r}
+set.seed(0)
+item_data <- matrix(data=0,nrow=10000,ncol=20)
+qualities <- runif(20,0,1)   #the propensity of each item to be purchased 
+for (col in 1:20){
+  item_data[,col] <- sample(c(0,1), 10000, replace = TRUE, prob = c(1-qualities[col],qualities[col]))  #for each item, which users have purchased it?  
+}
+profit <- rnorm(20, 1, 1)    #the profit for each of each item
+```
+
+Let's assume that item 1 is the best-fit item. We look for the most profitable item with a cosine similarity with this item of 0.9 or better, according to the comparison of user purchases.
+```{r, message=FALSE}
+item_similarity <- distance(t(item_data), method='cosine')[1,]   #similarity between item 1 and each of the other items
+cat("The profit for each of the 20 items is\n  ",profit,"\n")
+cat("The similarity between item 1 and each of the 20 items is\n  ",item_similarity,"\n")
+cat("The item to recommend is",which(profit==max(profit[which(item_similarity > 0.9)])),"with profit",max(profit[which(item_similarity > 0.9)]))
+```
+
+**Q11:** What do we find when considering the profit from different items?
+**A11:** [Write your answer here]
+
+This kind of tradeoff is very common in practice, for example travel booking sites may promote hotels for which they have an advantageous revenue-share deal.
+```{r}
+rm(item_data)
+```
+
+# Conclusions
+
+Performance differences between recommender systems are highly situation dependent, and different recommenders are suited for different purposes. For example, association-rules are useful for short-term recommenders, where immediate context is important and  users are making multiple decisions (what to buy?). The Netflix problem is quite different--- deciding which content to recommend based on past viewing habits of the user, and with very little cirremt context. Matrix factorization is effective here. As we have seen, platforms such as Pinterest and Spotify also make use of hybrid recommender systems, which combine user behavioral data with attributes of images or songs, and obtain still more relevant  results.
