@@ -1,0 +1,284 @@
+---
+title: 'Digital Advertising: Experimentation'
+subtitle: "Week 4, Data-driven Marketing, Harvard Business Analytics Program"
+author: "Kojin Oshiba and David C. Parkes"
+date: "9/30/2018"
+output: pdf_document
+---
+
+# 0. Overview
+
+Procter & Gamble runs a targeted ad campaign. Their goal: increase the purchases of Oral Boral hygiene products. **P&G can decide which users to target, and are told by Amazon who sees the ad, and the time spent and sales for all targeted users.** 
+```{r}
+library(knitr)
+knitr::include_graphics("amazon_ad1.png")
+```
+
+Why is P&G running an ad campaign?
+[to 1, 2]
+
+
+# 3. Observational Data, Naive estimates 
+
+We run a targeted ad campaign on 2,000,000 users, for a month. Some see the ad at least once, and we have for each user the time spent and the total sales.
+```{r,warning=FALSE}
+load("adSales.Rda")
+summary(df.observation)
+head(df.observation)
+cat("Number of users:",nrow(df.observation))
+library(ggplot2)
+data<-data.frame(sales=df.observation[1:500000,]$sales)
+ggplot(data, aes(x=sales))+scale_x_continuous(limits = c(0,100))+
+      geom_histogram(binwidth=5,color="black", fill="grey")
+data<-data.frame(time.spent=df.observation[1:500000,]$time.spent)
+ggplot(data, aes(x=time.spent))+scale_x_continuous(limits = c(0,100))+
+      geom_histogram(binwidth=5,color="black", fill="grey")
+plot(df.observation$time.spent[1:10000],df.observation$sales[1:10000])
+rm(data)
+```
+
+# Naive Estimate of Ad Effectiveness
+
+Of those targeted, let's compare sales to those who see the ad to those who don't. 
+```{r}
+df.observation.see_ads <- df.observation[df.observation$saw.ads == 1,]
+df.observation.no_see_ads <- df.observation[df.observation$saw.ads == 0,]
+cat("Difference in sales between see ad and don't see ad = ", mean(df.observation.see_ads$sales) -mean(df.observation.no_see_ads$sales))
+```
+
+They spend $8.83 more!
+
+**Q1:** Why might $8.83 be an overestimate of the incremental effect of the ad campaign?
+**A1:** Those that see the ad spend more time on the site, and those that spend more time on site also buy more.
+
+```{r}
+cat("Difference in time on site between see ad and don't see ad = ", mean(df.observation.see_ads$time.spent) -mean(df.observation.no_see_ads$time.spent))
+```
+
+Time on site is a confounder. Consumers who see the ad are different from those who do not (they are on the site more). Time on site is correlated both with "see ad" and "sales amount." What looks like a "see ad" effect can just be an indicator that they are on the site more.
+```{r}
+knitr::include_graphics("dag.png")
+```
+
+[to 4]
+
+
+
+
+
+```{r}
+rm(df.observation.see_ads,df.observation.no_see_ads)
+```
+
+
+# 5. Randomized Experiment I (Intention to Treat)
+
+P&G decides to run an A/B experiment. For each targered user,  flips a coin. For some, "try to show an ad" (the treatment), for others, "do not try to show an ad" (the control). For those in the treatment, Amazon will report whether or not they saw the ad (were they reachable?).
+
+**Why will this help?**
+
+Let's get the results of the experiment, now including "treatment" and "reachable" as variables. For those in control, P&G does not know whether they could have seen an ad.
+```{r}
+head(df.experiment)
+```
+
+## Randomization Check
+
+Let's compare the time spent on site.
+```{r}
+summary(df.experiment$time.spent[df.experiment$treatment == 1])
+summary(df.experiment$time.spent[df.experiment$treatment == 0])
+```
+
+## Intention to Treat Effect
+
+How useful was it to try to show consumers an ad? (The "intent to treat" effect?) 
+```{r}
+df.experiment.control <- df.experiment[df.experiment$treatment == 0,]
+df.experiment.treatment <- df.experiment[df.experiment$treatment == 1,]
+cat("Estimated incremental effect of targeting a user for an ad: ",
+    mean(df.experiment.treatment$sales) - mean(df.experiment.control$sales))
+```
+
+**Q3:** What is unsatisfactory about only being able to estimate ITT? What else would a merchant, Procter & Gamble for example, prefer to measure?
+**A3:** We're including in the sales difference the people who were unreachable. Of course the ad had no effect on those users. 
+
+[to 6, 7]
+
+
+
+
+
+
+
+
+
+
+
+## 8. Randomized Experiment II . Average Treatment Effect on the Treated 
+
+ATET measures the incremental effect of showing users an ad. 
+
+We can obtain an unbiased estimate, assuming (i) that fraction of reachable is same for control as treatment (by randomization), and (ii) that sales from unreachable is same whether or not in control or treatment (by randomization).
+
+Let *reach_t* represent  fraction of users who are reachable in the treatment group.
+```{r}
+reach_t <- mean(df.experiment.treatment$reachable)
+cat("Fraction of reachable consumers:", reach_t)
+```
+
+Under the two assumptions, we can calculate ATET:
+```{r}
+B <- (mean(df.experiment.control$sales) - 
+        mean(df.experiment.treatment[df.experiment.treatment$reachable == 0,]$sales) * (1 - reach_t)) / reach_t
+D <- mean(df.experiment.treatment[df.experiment.treatment$reachable == 1,]$sales)
+cat("Estimated incremental effect of showing a reachable user an ad:",D - B)
+```
+
+**Q5:** The naive estimate was $8.83. Why is this estimate a lot smaller?
+**A5:** Bias has gone now. 
+
+```{r}
+rm(df.experiment.control,df.experiment.treatment,B,D,reach_t)
+```
+
+
+# Using Ghost Ads
+
+Can we try to get better observations for those reachable, but in control? What about using a **placebo ad** for those in control? Merchant will know for control and treatment whether reachable, and can measure the effect of the placebo ad vs the intended ad on the reachable users.
+```{r}
+knitr::include_graphics("Smokey.jpg") #https://en.wikipedia.org/wiki/Smokey_Bear
+```
+
+**Q6:** What are two things that still seem unsatisfactory about using placebo ads?
+**A6:** Expensive. Measure placebo ad vs intended ad, not P&G ad vs alternative (the ad of a competitor?).
+
+In come Ghost ads! 
+```{r}
+knitr::include_graphics("boo.jpg") #https://www.thecut.com/2016/10/why-ghosts-say-boo.html
+```
+
+Ghost ads are invisible to users, but can track the sales to reachable users in the control group as well as sales to  reachable users in the treatment group.
+```{r}
+knitr::include_graphics("smaller1.png")
+```
+
+Ghost ads are costless to the merchant, and track the correct counterfactual. Here's data from a ghost ads experiment. 2,000,000 targeted users, now know "reachable" for all users and can directly estimate the ATET. 
+```{r}
+head(df.ghostads)
+cat("Number of users:",nrow(df.ghostads))
+```
+
+**Q7:** How can we estimate ATET from this new data?
+**A7:** 
+
+```{r}
+cat("Estimated incremental effect of showing a reachable user an ad:",mean(df.ghostads[df.ghostads$reachable == 1 & df.ghostads$treatment == 1,]$sales)-mean(df.ghostads[df.ghostads$reachable == 1 & df.ghostads$treatment == 0,]$sales))
+```
+
+So, naive 8.83, backing out from ITT 1.05, and this ghost ads estimate is 0.99 (the correct value here is 1.0).
+
+[to 9.]
+
+
+
+
+
+
+
+
+
+
+
+
+# 10.  Exploring Confounder Strength (the simulator)
+
+We can also load the simulator that we use to generate the data.
+```{r, echo=FALSE}
+source("simulator.R")
+#args(simulator)
+```
+
+Simulator users the following model to generate the sales Y for a user.  
+```{r}
+knitr::include_graphics("model.png")
+```
+
+Where b0=0, b1=1 (true effect of advertising), b2=1 (effect of time on site on sales), b3=0.01 (coupling between time on site and reachable), b4=-1.5, sd1=0.1, sd2=0.2. The true effect of advertising is 1, and the estimate from ghost ads is the most accurate.
+
+We can vary b2, strength of effect of time on site and sales. Plot error in observational estimate.
+```{r}
+library(dplyr)
+obs.effects <- c() # array to store observation effects
+causal.effects <- c() # array to store causal effects
+b2values <- seq(from=0.0,to=2,by=0.25) 
+for (b2 in b2values) { # loop over parameter values
+  df.obs <- simulator(500000, b2=b2) # simulate observation data
+  df.ghost <- simulator(500000, b2=b2, randomized=TRUE) # simulate ghostads data
+
+  obs.effect <- mean(df.obs$sales[df.obs$saw.ads == 1]) - 
+    mean(df.obs$sales[df.obs$saw.ads == 0])
+  causal.effect <- mean(df.ghost$sales[(df.ghost$treatment == 1) & (df.ghost$reachable == 1)]) - 
+    mean(df.ghost$sales[(df.ghost$treatment == 0) & (df.ghost$reachable == 1)])
+
+  # append observational and causal effects to arrays
+  obs.effects <- c(obs.effects,obs.effect)
+  causal.effects <- c(causal.effects,causal.effect)
+}
+
+df2 <- data.frame(b2s = b2values,Variable = causal.effects)
+df1 <- data.frame(b2s = b2values,Variable = obs.effects)
+df3 <- df2 %>%  mutate(Method = 'Ghost estimate') %>%
+       bind_rows(df1 %>%
+           mutate(Method = 'Naive estimate'))
+
+ggplot(df3,aes(y = Variable,x = b2s, color = Method)) + 
+  geom_line()  + xlab('b2 values') +
+  ylab('Estimated sales effect')
+rm(df1,df2,df3,df.obs,df.ghost,obs.effects,causal.effects,b2,b2values,causal.effect,obs.effect)
+```
+
+**Q8:** What is the effect on the naive estimate of increasing the strength of relationship between the time on site and sales? 
+**A8:** The confound quickly dominates, and makes the naive estimate from observational data very unreliable. The true effect size is only 1.0!
+
+We can also vary b3, the strength of coupling between time on site and reachability. Plot error in observational estimate.
+```{r}
+obs.effects <- c()
+causal.effects <- c()
+b3values <- seq(from=0.0,to=0.05,by=0.005)
+for (b3 in b3values) {
+  df.obs <- simulator(500000, b3=b3)
+  df.ghost <- simulator(500000, b3=b3, randomized=TRUE)
+
+  obs.effect <- mean(df.obs$sales[df.obs$saw.ads == 1]) -
+    mean(df.obs$sales[df.obs$saw.ads == 0])
+  causal.effect <- mean(df.ghost$sales[(df.ghost$treatment == 1) & (df.ghost$reachable == 1)]) - 
+    mean(df.ghost$sales[(df.ghost$treatment == 0) & (df.ghost$reachable == 1)])
+
+  obs.effects <- c(obs.effects,obs.effect)
+  causal.effects <- c(causal.effects,causal.effect)
+}
+
+df2 <- data.frame(b3s = b3values,Variable = causal.effects)
+df1 <- data.frame(b3s = b3values,Variable = obs.effects)
+df3 <- df2 %>%  mutate(Method = 'Ghost estimate') %>%
+       bind_rows(df1 %>%
+           mutate(Method = 'Naive estimate'))
+
+ggplot(df3,aes(y = Variable,x = b3s, color = Method)) + 
+  geom_line()  + xlab('b3 values') +
+  ylab('Estimated sales effect')
+rm(df1,df2,df3,df.obs,df.ghost,obs.effects,causal.effects,b3,b3values,causal.effect,obs.effect)
+```
+
+**Q9:** What is the effect on the naive estimate of increasing the strength of relationship between the time on site and the reachability of a user? 
+**A9:** Again, as time on spent affects reachability, the confound comes to dominate (saturates here because at some point almost all people who spend any time on site are reachable). 
+
+# Pros and Cons of AB tests
+
+**Q10:** What about A/B experiments in a context familiar to you? What quantity would you like to estimate, what could go wrong with just observational data, and what practical concerns would you have?
+**A10:** 
+
+# Conclusions
+
+The lesson learned is that we should always be very careful when drawing conclusions from observational data. Is the data telling us what we think it is? Randomized experiments are crucial.
